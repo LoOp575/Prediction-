@@ -34,35 +34,41 @@ interface RequestBody {
 
 function isDrawArray(value: unknown): value is Draw[] {
   if (!Array.isArray(value)) return false;
-  return value.every(
-    (entry) =>
-      entry &&
-      typeof entry === "object" &&
-      typeof (entry as Draw).id === "string" &&
-      Array.isArray((entry as Draw).digits),
-  );
+  return value.every((entry) => {
+    if (!entry || typeof entry !== "object") return false;
+    const draw = entry as { id?: unknown; digits?: unknown };
+    if (typeof draw.id !== "string") return false;
+    if (!Array.isArray(draw.digits)) return false;
+    return draw.digits.every(
+      (d) => typeof d === "number" && Number.isFinite(d),
+    );
+  });
 }
 
-async function readBody(request: Request): Promise<RequestBody> {
+async function readBody(request: Request): Promise<[RequestBody, boolean]> {
+  let text: string;
   try {
-    const text = await request.text();
-    if (!text || !text.trim()) return {};
+    text = await request.text();
+  } catch {
+    return [{}, false];
+  }
+  if (!text || !text.trim()) return [{}, false];
+  try {
     const parsed: unknown = JSON.parse(text);
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as RequestBody;
+      return [parsed as RequestBody, false];
     }
-    return {};
+    return [{}, false];
   } catch {
     // Malformed JSON: treat as empty body so the caller falls back to the
     // sample fixture rather than throwing a 500.
-    return { __malformed: true } as RequestBody & { __malformed: true };
+    return [{}, true];
   }
 }
 
 export async function POST(request: Request) {
   try {
-    const body = await readBody(request);
-    const malformed = (body as RequestBody & { __malformed?: boolean }).__malformed === true;
+    const [body, malformed] = await readBody(request);
 
     let draws: Draw[] = [];
     if (typeof body.input === "string" && body.input.trim().length > 0) {

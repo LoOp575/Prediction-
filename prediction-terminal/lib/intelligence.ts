@@ -37,7 +37,7 @@ import {
   computeRepetitionRisk,
   entropyOfNumber,
 } from "@/lib/entropy";
-import { combinedDigitWeights, computeProbabilityRanking } from "@/lib/probability";
+import { combinedDigitWeights, rankFromDigitWeights } from "@/lib/probability";
 import { clamp01, normalizeScores, softmax } from "@/lib/normalization";
 
 /**
@@ -215,8 +215,11 @@ export function enumerateAllCandidates(numberLength: number): string[] {
  * Produce a bounded candidate list using a digit-pool strategy.
  *
  * 1. Pick the top digits by combined weight (probability.ts).
- * 2. Pool size = min(10, max(numberLength, ceil(candidatePool^(1/length))*2,
- *    ceil(sqrt(candidatePool))))
+ * 2. Pool size is the largest p such that p^len <= 10000, clamped to
+ *    [min(2,len), 10]. This keeps the Cartesian-product enumeration
+ *    tractable for any numberLength while still exploring multiple
+ *    digits per position. For len=4 we get pool=10 (10^4=10000); for
+ *    len=5 we get pool=6 (6^5=7776); for len=6, pool=4 (4^6=4096).
  * 3. Cartesian product over `numberLength` positions, deduplicated.
  * 4. Sorted by per-position positional-frequency product as a cheap
  *    pre-rank, trimmed to candidatePool.
@@ -228,11 +231,10 @@ export function generateCandidates(
   const len = Math.max(1, Math.trunc(options.numberLength));
   const pool = Math.max(1, Math.trunc(options.candidatePool));
 
-  const expansionCap = Math.max(
-    Math.ceil(Math.pow(pool, 1 / len)) * 2,
-    Math.ceil(Math.sqrt(pool)),
-  );
-  const poolSize = Math.min(10, Math.max(len, expansionCap));
+  // Largest poolSize whose Cartesian product stays at or below 10000.
+  // Math.pow(10000, 1/len) is the real-valued bound; floor it and clamp.
+  const cartesianBound = Math.max(2, Math.floor(Math.pow(10000, 1 / len)));
+  const poolSize = Math.min(10, Math.max(Math.min(2, len), cartesianBound));
 
   // Rank digits by combinedDigitWeights, ties broken by global frequency.
   const digitsRanked = [...DIGIT_KEYS].sort((a, b) => {
@@ -243,32 +245,23 @@ export function generateCandidates(
   });
   const selected = digitsRanked.slice(0, poolSize);
 
-  // Enumerate Cartesian product. With poolSize <= 10 and len <= 4 the
-  // upper bound is 10^4 = 10000, well within memory.
+  // Enumerate Cartesian product. By construction poolSize^len <= 10000,
+  // so this loop is bounded.
   const combos: string[] = [];
   const indices = new Array(len).fill(0);
-  const guard = Math.pow(poolSize, len);
-  if (!Number.isFinite(guard) || guard > 10000) {
-    // Length too large to enumerate even from a pool; fall back to a
-    // straight permutation of the top digits.
-    for (let i = 0; i < Math.min(pool, selected.length); i += 1) {
-      combos.push(selected[i].repeat(len));
+  while (true) {
+    let s = "";
+    for (let i = 0; i < len; i += 1) s += selected[indices[i]];
+    combos.push(s);
+    // increment indices like an odometer
+    let pos = len - 1;
+    while (pos >= 0) {
+      indices[pos] += 1;
+      if (indices[pos] < selected.length) break;
+      indices[pos] = 0;
+      pos -= 1;
     }
-  } else {
-    while (true) {
-      let s = "";
-      for (let i = 0; i < len; i += 1) s += selected[indices[i]];
-      combos.push(s);
-      // increment
-      let pos = len - 1;
-      while (pos >= 0) {
-        indices[pos] += 1;
-        if (indices[pos] < selected.length) break;
-        indices[pos] = 0;
-        pos -= 1;
-      }
-      if (pos < 0) break;
-    }
+    if (pos < 0) break;
   }
 
   // Deduplicate while preserving order.
@@ -350,6 +343,11 @@ export function reasonFor(terms: InteractionTerms): string {
  * Main entry point. Build context, generate candidates, score every
  * candidate via the interaction formula, then return a ranked report.
  *
+ * On an empty input draw set the engine short-circuits to an empty
+ * candidate list with a `topPick: null` and an explicit "insufficient
+ * input data" notice, so consumers never see a confidently-fabricated
+ * top pick built from neutral baselines.
+ *
  * Probabilistic intelligence, NOT deterministic prediction.
  */
 export function rankByInteraction(
@@ -366,6 +364,21 @@ export function rankByInteraction(
     ),
   );
   const topK = Math.max(1, Math.trunc(options?.topK ?? 10));
+
+  // No data -> no candidates. Empty-input safety: returning an empty
+  // candidate list is better than emitting "0000" with score=1 from a
+  // lexicographic tiebreaker on neutral baselines.
+  if (safeDraws.length === 0) {
+    return {
+      candidates: [],
+      topPick: null,
+      perDigit: rankFromDigitWeights(combinedDigitWeights(safeDraws)),
+      entropy: 0,
+      generatedAt: new Date().toISOString(),
+      notice: `${notice} Insufficient input data; no candidates generated.`,
+    };
+  }
+
   const candidatePool = Math.max(
     topK,
     Math.trunc(options?.candidatePool ?? Math.max(50, topK * 5)),
@@ -401,6 +414,7 @@ export function rankByInteraction(
     const fm = Math.min(Math.max(safe(fmRaw), 0), FM_CAP);
     const pressure = clamp01(fm / (1 - fm + EPS));
     const score = clamp01(safe(scoreNorm[numStr]));
+    const rawScore = safe(rawScores[numStr]);
     const probability = clamp01(safe(probabilities[numStr]));
     const entropy = clamp01(safe(terms.E));
     return {
@@ -408,6 +422,7 @@ export function rankByInteraction(
       interactionPressure: pressure,
       entropy,
       score,
+      rawScore,
       probability,
       reason: reasonFor(terms),
       rank: 0,
@@ -423,7 +438,11 @@ export function rankByInteraction(
 
   const top = ranked.slice(0, topK);
 
-  const perDigit: PredictionResult[] = computeProbabilityRanking(safeDraws);
+  // Reuse ctx.digitWeights (already computed by buildContext via
+  // combinedDigitWeights) instead of running computeProbabilityRanking,
+  // which would re-execute computeFrequency / computePositionalFrequency
+  // / computeMomentumAcceleration a second time for the same draws.
+  const perDigit: PredictionResult[] = rankFromDigitWeights(ctx.digitWeights);
 
   return {
     candidates: top,

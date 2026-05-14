@@ -48,8 +48,14 @@ export interface RankedNumber {
   interactionPressure: number;
   /** Per-candidate Shannon entropy of its digit string in [0,1]. */
   entropy: number;
-  /** Min-max normalised raw interaction score in [0,1]. */
+  /** Min-max normalised raw interaction score in [0,1]. The top candidate
+   *  always reports score === 1 because of the min-max scale - use rawScore
+   *  to compare absolute interaction strength across reports. */
   score: number;
+  /** Raw F*PF*T*M*C / ((1-FM)(1+N)(1+R)(1+E)) before any normalisation.
+   *  Not bounded to [0,1]; can be tiny (e.g. ~1e-10 on no-data input). Use
+   *  to detect low-signal reports where every candidate is weak. */
+  rawScore: number;
   /** Softmax-normalised probability across all candidates, in [0,1]. */
   probability: number;
   /** Human readable narrative built from dominant signal terms. */

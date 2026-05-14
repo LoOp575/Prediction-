@@ -1,5 +1,5 @@
 import type { Draw } from "@/types";
-import { softmax, clamp01 } from "@/lib/normalization";
+import { clamp01, normalizeScores } from "@/lib/normalization";
 
 /**
  * Digit cluster detection helpers.
@@ -8,10 +8,11 @@ import { softmax, clamp01 } from "@/lib/normalization";
  * sliding window of the flattened digit stream) with neighbours that share
  * its parity (even/odd) AND its half (low 0-4 / high 5-9). Digits that tend
  * to travel with similar digits are considered to have higher cluster
- * cohesion. The output is a probability-shaped distribution (softmax over
- * the raw counts), and a per-candidate aggregator that re-spreads the
- * geometric mean back into [0,1] for use as the C term of the
- * interaction-mathematics engine.
+ * cohesion. The output is a min-max-normalised distribution in [0,1] so
+ * that an all-zero count vector (empty / no-data input) stays at zero
+ * rather than collapsing to a uniform softmax floor; the per-candidate
+ * aggregator then re-spreads the geometric mean back into [0,1] for use
+ * as the C term of the interaction-mathematics engine.
  *
  * Output is probabilistic intelligence, NOT deterministic prediction.
  */
@@ -49,15 +50,17 @@ function isSimilar(a: number, b: number): boolean {
 /**
  * Per-digit cluster confidence in [0,1]. Counts how often each digit appears
  * in a sliding window of size 3 alongside another digit that shares parity
- * AND half (low/high). The raw counts are softmaxed so the distribution
- * sums to 1, giving a probability-shaped cluster signal.
+ * AND half (low/high). The raw counts are min-max normalised so the
+ * strongest cluster maps to 1.0 and zero-count digits stay at 0; this
+ * preserves "no signal" rather than smearing softmax probability onto every
+ * digit and creating a ~0.63 floor for C.
  */
 export function detectDigitClusters(draws: Draw[]): Record<string, number> {
   const counts = emptyDigitMap();
   const seq = flattenDigits(draws);
   if (seq.length === 0) {
-    // softmax on all-zero is uniform 0.1 each - that is fine.
-    return softmax(counts);
+    // No data -> every digit has zero cluster signal. Empty-input safety.
+    return counts;
   }
   for (let i = 0; i < seq.length; i += 1) {
     const center = seq[i];
@@ -70,14 +73,16 @@ export function detectDigitClusters(draws: Draw[]): Record<string, number> {
       }
     }
   }
-  return softmax(counts);
+  return normalizeScores(counts);
 }
 
 /**
  * Aggregate per-digit cluster confidence into a single C value for a
  * multi-digit candidate. Uses the geometric mean (numerically stable via
  * log-sum-exp style averaging) and re-spreads the result back into a
- * usable [0,1] range using 1 - exp(-k*x).
+ * usable [0,1] range using 1 - exp(-k*x). With min-max-normalised inputs
+ * the output now collapses toward zero on no-data input rather than
+ * floating at the previous softmax floor of ~0.63.
  */
 export function clusterConfidenceForNumber(
   numberStr: string,
@@ -96,6 +101,8 @@ export function clusterConfidenceForNumber(
   if (n === 0) return 0;
   const geo = Math.exp(sumLog / n);
   if (!Number.isFinite(geo) || geo <= 0) return 0;
-  // softmax outputs are tiny (~0.1 average across 10 digits); re-spread.
+  // min-max-normalised inputs reach up to 1.0 for the strongest digit;
+  // re-spread via 1 - exp(-k*x) so the final C is well-distributed in
+  // [0,1] rather than tightly clustered near zero.
   return clamp01(1 - Math.exp(-SHARPNESS_K * geo));
 }

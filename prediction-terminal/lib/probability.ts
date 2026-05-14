@@ -58,9 +58,20 @@ export function combinedDigitWeights(
  * floating-point error). Ranks are 1..10 in descending probability order.
  */
 export function computeProbabilityRanking(draws: Draw[]): PredictionResult[] {
-  const weights = combinedDigitWeights(draws);
-  const probs = softmax(weights);
+  return rankFromDigitWeights(combinedDigitWeights(draws));
+}
 
+/**
+ * Per-digit ranking from a precomputed combinedDigitWeights() output. The
+ * intelligence orchestrator already builds those weights when assembling
+ * its EngineContext; reusing them here avoids a redundant second pass
+ * through computeFrequency / computePositionalFrequency /
+ * computeMomentumAcceleration.
+ */
+export function rankFromDigitWeights(
+  weights: Record<string, number>,
+): PredictionResult[] {
+  const probs = softmax(weights);
   const entries: PredictionResult[] = [];
   for (const k of DIGIT_KEYS) {
     entries.push({

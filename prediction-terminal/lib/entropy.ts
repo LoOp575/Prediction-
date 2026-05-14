@@ -55,27 +55,35 @@ export function computeEntropy(draws: Draw[]): number {
 }
 
 /**
- * Per-digit repetition risk in [0,1]. Counts the run length of consecutive
- * appearances at the END of the flattened sequence, divided by 4 and
- * clamped. A digit that just repeated three times in a row gets 0.75;
- * digits that did not appear in the trailing run get 0.
+ * Per-digit repetition risk in [0,1]. For each digit 0..9 we record its
+ * longest consecutive run anywhere in the flattened sequence (the
+ * trailing run, if any, is included in this maximum), divided by 4 and
+ * clamped. Symmetric across digits: every digit gets graded influence,
+ * not just the one that happens to terminate the sequence.
  */
 export function computeRepetitionRisk(draws: Draw[]): Record<string, number> {
   const out = emptyDigitMap();
   const seq = flattenDigits(draws);
   if (seq.length === 0) return out;
-  // Walk backwards from the end, count run length per terminating digit.
-  // The "end" digit's run length is straightforward; for other digits we
-  // record their longest trailing run (the most-recent occurrence backward).
-  // For simplicity & spec compliance: the trailing-run length of the LAST
-  // digit gets credited to that digit, and any digit not in that run is 0.
-  const last = seq[seq.length - 1];
-  let run = 1;
-  for (let i = seq.length - 2; i >= 0; i -= 1) {
-    if (seq[i] === last) run += 1;
-    else break;
+  const longest = emptyDigitMap();
+  let runDigit = seq[0];
+  let runLen = 1;
+  for (let i = 1; i < seq.length; i += 1) {
+    if (seq[i] === runDigit) {
+      runLen += 1;
+    } else {
+      const key = String(runDigit);
+      if (runLen > longest[key]) longest[key] = runLen;
+      runDigit = seq[i];
+      runLen = 1;
+    }
   }
-  out[String(last)] = clamp01(run / REPETITION_DIVISOR);
+  // flush the final run
+  const finalKey = String(runDigit);
+  if (runLen > longest[finalKey]) longest[finalKey] = runLen;
+  for (const k of DIGIT_KEYS) {
+    out[k] = clamp01(longest[k] / REPETITION_DIVISOR);
+  }
   return out;
 }
 

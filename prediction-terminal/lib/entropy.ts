@@ -57,9 +57,12 @@ export function computeEntropy(draws: Draw[]): number {
 /**
  * Per-digit repetition risk in [0,1]. For each digit 0..9 we record its
  * longest consecutive run anywhere in the flattened sequence (the
- * trailing run, if any, is included in this maximum), divided by 4 and
- * clamped. Symmetric across digits: every digit gets graded influence,
- * not just the one that happens to terminate the sequence.
+ * trailing run, if any, is included in this maximum), and we then take
+ * `max(0, longest - 1) / REPETITION_DIVISOR` so a digit appearing exactly
+ * once contributes R = 0 (not a repetition). Only true repetitions
+ * (consecutive runs of length >= 2) drive R upward. Symmetric across
+ * digits: every digit gets graded influence, not just the one that
+ * happens to terminate the sequence.
  */
 export function computeRepetitionRisk(draws: Draw[]): Record<string, number> {
   const out = emptyDigitMap();
@@ -82,7 +85,10 @@ export function computeRepetitionRisk(draws: Draw[]): Record<string, number> {
   const finalKey = String(runDigit);
   if (runLen > longest[finalKey]) longest[finalKey] = runLen;
   for (const k of DIGIT_KEYS) {
-    out[k] = clamp01(longest[k] / REPETITION_DIVISOR);
+    // Subtract 1 so a single appearance (longest=1) yields R = 0; a true
+    // run of N consecutive appearances yields R = (N-1)/4.
+    const repetitions = Math.max(0, longest[k] - 1);
+    out[k] = clamp01(repetitions / REPETITION_DIVISOR);
   }
   return out;
 }

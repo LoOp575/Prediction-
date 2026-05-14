@@ -1,18 +1,25 @@
-import TerminalLayout from "@/components/terminal/TerminalLayout";
 
-export default function HomePage() {
+import { analyzeHK } from "@/lib/analyze";
+
+export default function Home() {
+  const analysis = analyzeHK();
+
   return (
-    <main className="min-h-screen">
-      <header className="border-b border-terminal-border px-4 py-3 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <span className="text-terminal-accent">●</span>
-          <h1 className="text-sm tracking-widest uppercase">
-            Prediction Market Intelligence Terminal
-          </h1>
+    <main className="min-h-screen bg-black text-green-400 p-6">
+      <h1 className="text-2xl font-bold mb-4">
+        Prediction Intelligence Terminal
+      </h1>
+
+      <p>Market: {analysis.market}</p>
+      <p>Total Draws: {analysis.totalDraws}</p>
+
+      <h2 className="text-xl font-bold mt-6 mb-2">Top Predictions</h2>
+
+      {analysis.predictions.map((item) => (
+        <div key={item.number}>
+          {item.number} — {(item.probability * 100).toFixed(4)}%
         </div>
-        <span className="text-xs text-terminal-muted">v0.1.0 // scaffold</span>
-      </header>
-      <TerminalLayout />
+      ))}
     </main>
   );
 }
